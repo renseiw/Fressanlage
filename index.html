@@ -22,17 +22,31 @@
 
     <script>
         let openMouthTime = 0, closedMouthTime = 0, lastState = "closed", lastChangeTime = Date.now();
+        let video = document.getElementById('video');
 
         async function setupCamera() {
-            const video = document.getElementById('video');
             const stream = await navigator.mediaDevices.getUserMedia({ video: true });
             video.srcObject = stream;
-            return new Promise((resolve) => { video.onloadedmetadata = () => resolve(video); });
+
+            return new Promise((resolve) => {
+                video.onloadedmetadata = () => {
+                    video.play();
+                    console.log("Kamera erfolgreich gestartet.");
+                    resolve(video);
+                };
+            });
         }
 
         async function detectMouth() {
             const video = await setupCamera();
-            await new Promise(r => setTimeout(r, 1000)); // Sicherheitspuffer
+            await new Promise(resolve => setTimeout(resolve, 1000)); // Sicherheitspuffer
+
+            // Warte, bis das Video eine Breite und Höhe hat
+            while (video.videoWidth === 0 || video.videoHeight === 0) {
+                console.log("Warte auf Webcam-Feed...");
+                await new Promise(resolve => setTimeout(resolve, 100));
+            }
+
             const model = await facemesh.load();
             const canvas = document.getElementById('overlay');
             const ctx = canvas.getContext('2d');
@@ -51,6 +65,12 @@
             }
 
             async function analyzeFrame() {
+                if (video.videoWidth === 0 || video.videoHeight === 0) {
+                    console.warn("Video hat keine gültige Größe. Überspringe Frame.");
+                    requestAnimationFrame(analyzeFrame);
+                    return;
+                }
+
                 ctx.clearRect(0, 0, canvas.width, canvas.height);
                 const predictions = await model.estimateFaces({ input: video });
 
