@@ -3,128 +3,200 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Fressanlage</title>
-    <script src="https://docs.opencv.org/4.5.0/opencv.js"></script>
+    <title>Mundöffnungserkennung mit TensorFlow.js</title>
+    <!-- TensorFlow.js und Face-Landmarks-Detection laden -->
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@3.21.0/dist/tf.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/face-landmarks-detection"></script>
+    <!-- Chart.js -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
-        body { text-align: center; font-family: Arial, sans-serif; }
-        #warning { font-size: 24px; font-weight: bold; color: red; display: none; }
-        #chartCanvas { margin-top: 20px; width: 400px; height: 200px; }
+        video {
+            border: 2px solid #333;
+            border-radius: 8px;
+            width: 320px;
+            height: 240px;
+            display: block;
+            margin-bottom: 1rem;
+        }
+        canvas {
+            max-width: 400px;
+            max-height: 200px;
+            margin-bottom: 1rem;
+        }
+        #status {
+            margin-bottom: 1rem;
+        }
     </style>
 </head>
 <body>
-    <h1>Fressanlage</h1>
-    <p id="warning">Mach den Mund zu!</p>
-    <canvas id="chartCanvas"></canvas>
+    <h2>Mundöffnungs-Erkennung mit TensorFlow.js</h2>
+    <p id="status">Lade Modell...</p>
+    <video id="video" autoplay muted></video>
+    <canvas id="outputCanvas" width="320" height="240"></canvas>
+    <canvas id="chartCanvas" width="400" height="200"></canvas>
 
     <script>
-        let openMouthTime = 0, closedMouthTime = 0;
-        let lastState = "closed";
+        // Ask the user what behavior is expected if multiple faces appear.
+        // Currently, the code only processes the first face in view.
+        // Is that okay, or do you want to track multiple faces?
+
+        let model;
+        let video = document.getElementById('video');
+        let outputCanvas = document.getElementById('outputCanvas');
+        // Renaming variable to avoid duplicate declarations
+        let canvasCtx = outputCanvas.getContext('2d');
+
+        let openTime = 0;
+        let closedTime = 0;
+        let lastState = 'closed';
         let lastChangeTime = Date.now();
-        let video, cap, faceCascade, frame, gray, faces;
+
+        let chart;
 
         async function setupCamera() {
-            video = document.createElement("video");
-            video.setAttribute("autoplay", "");
-            video.setAttribute("playsinline", "");
             const stream = await navigator.mediaDevices.getUserMedia({ video: true });
             video.srcObject = stream;
-
-            return new Promise(resolve => {
+            return new Promise((resolve) => {
                 video.onloadedmetadata = () => {
-                    console.log("Kamera erfolgreich gestartet: ", video.videoWidth, "x", video.videoHeight);
                     video.play();
-                    resolve(video);
+                    resolve();
                 };
             });
         }
 
-        async function detectMouth() {
-            video = await setupCamera();
-            cap = new cv.VideoCapture(video);
-
-            // Initialisiere die OpenCV-Objekte mit der richtigen Größe
-            frame = new cv.Mat(video.videoHeight, video.videoWidth, cv.CV_8UC4);
-            gray = new cv.Mat();
-            faces = new cv.RectVector();
-
-            faceCascade = new cv.CascadeClassifier();
-            await new Promise(resolve => {
-                cv.FS_createPreloadedFile("/", "haarcascade_frontalface_default.xml",
-                    "https://raw.githubusercontent.com/opencv/opencv/master/data/haarcascades/haarcascade_frontalface_default.xml",
-                    true, false, resolve);
-            });
-
-            faceCascade.load("haarcascade_frontalface_default.xml");
-
-            async function processFrame() {
-                if (!video.videoWidth || !video.videoHeight) {
-                    console.warn("Video hat keine gültige Größe. Warte...");
-                    requestAnimationFrame(processFrame);
-                    return;
-                }
-
-                // **Fix: Dynamische Neuzuordnung des Mat-Objekts, wenn die Größe sich ändert**
-                if (frame.cols !== video.videoWidth || frame.rows !== video.videoHeight) {
-                    console.log("Videoauflösung hat sich geändert, aktualisiere Mat-Objekte...");
-                    frame = new cv.Mat(video.videoHeight, video.videoWidth, cv.CV_8UC4);
-                    gray = new cv.Mat();
-                }
-
-                cap.read(frame);
-                cv.cvtColor(frame, gray, cv.COLOR_RGBA2GRAY);
-
-                // Gesichtserkennung
-                faceCascade.detectMultiScale(gray, faces, 1.1, 3, 0);
-
-                let mouthOpen = false;
-                for (let i = 0; i < faces.size(); i++) {
-                    let face = faces.get(i);
-                    let mouthRegion = gray.roi(new cv.Rect(face.x, face.y + face.height / 2, face.width, face.height / 2));
-
-                    // Berechne Helligkeit im unteren Gesichtsbereich
-                    let mean = cv.mean(mouthRegion);
-                    mouthOpen = mean[0] > 120; // Falls zu hell, könnte der Mund offen sein
-
-                    mouthRegion.delete();
-                }
-
-                // **Zeitmessung für Mundstatus**
-                let currentTime = Date.now();
-                if (mouthOpen && lastState === "closed") {
-                    closedMouthTime += (currentTime - lastChangeTime) / 1000;
-                    lastState = "open";
-                    lastChangeTime = currentTime;
-                    document.getElementById("warning").style.display = "block";
-                } else if (!mouthOpen && lastState === "open") {
-                    openMouthTime += (currentTime - lastChangeTime) / 1000;
-                    lastState = "closed";
-                    lastChangeTime = currentTime;
-                    document.getElementById("warning").style.display = "none";
-                }
-
-                updateChart();
-                requestAnimationFrame(processFrame);
-            }
-
-            processFrame();
-        }
-
         function updateChart() {
-            if (!window.myChart) {
-                const ctx = document.getElementById('chartCanvas').getContext('2d');
-                window.myChart = new Chart(ctx, {
+            if (!chart) {
+                const chartCtx = document.getElementById('chartCanvas').getContext('2d');
+                chart = new Chart(chartCtx, {
                     type: 'bar',
-                    data: { labels: ['Mund geschlossen', 'Mund offen'], datasets: [{ label: 'Zeit (Sekunden)', data: [closedMouthTime, openMouthTime], backgroundColor: ['blue', 'red'] }] },
-                    options: { responsive: false, scales: { y: { beginAtZero: true } } }
+                    data: {
+                        labels: ['Offen', 'Geschlossen'],
+                        datasets: [
+                            {
+                                label: 'Zeit (Sekunden)',
+                                data: [openTime, closedTime],
+                                backgroundColor: ['red', 'green']
+                            }
+                        ]
+                    },
+                    options: {
+                        responsive: true,
+                        scales: {
+                            y: {
+                                beginAtZero: true
+                            }
+                        }
+                    }
                 });
             } else {
-                window.myChart.data.datasets[0].data = [closedMouthTime, openMouthTime];
-                window.myChart.update();
+                chart.data.datasets[0].data = [openTime, closedTime];
+                chart.update();
             }
         }
 
-        detectMouth();
+        // Einfache Distanzfunktion
+        function euclideanDistance(p1, p2) {
+            const dx = p1.x - p2.x;
+            const dy = p1.y - p2.y;
+            return Math.sqrt(dx * dx + dy * dy);
+        }
+
+        // Bestimme basierend auf Landmark-Punkten, ob der Mund offen ist
+        function isMouthOpen(landmarks) {
+            // MediaPipe-Face-Mesh Indizes (ungefähr):
+            // Obere Lippe: 13, Untere Lippe: 14
+            const upperLip = landmarks[13];
+            const lowerLip = landmarks[14];
+            const distance = euclideanDistance(
+                { x: upperLip.x, y: upperLip.y },
+                { x: lowerLip.x, y: lowerLip.y }
+            );
+            // Einfacher Grenzwert, hier z.B. 0.02
+            return distance > 0.02;
+        }
+
+        async function detectFace() {
+            // Zeichne das Kamerabild auf das Canvas
+            canvasCtx.drawImage(video, 0, 0, outputCanvas.width, outputCanvas.height);
+
+            // Führe die Gesichtserkennung aus
+            // Sicherstellen, dass das Modell geladen ist
+            if (!model) {
+                requestAnimationFrame(detectFace);
+                return;
+            }
+
+            const predictions = await model.estimateFaces({
+                input: video,
+                returnTensors: false,
+                flipHorizontal: false,
+                predictIrises: false
+            });
+
+            let now = Date.now();
+            let state = 'closed';
+
+            if (predictions.length > 0) {
+                const keypoints = predictions[0].keypoints;
+                if (isMouthOpen(keypoints)) {
+                    state = 'open';
+                }
+
+                // Landmarks zur Visualisierung
+                canvasCtx.strokeStyle = 'lime';
+                for (let i = 0; i < keypoints.length; i++) {
+                    const x = keypoints[i].x;
+                    const y = keypoints[i].y;
+                    canvasCtx.beginPath();
+                    canvasCtx.arc(x, y, 1, 0, 2 * Math.PI);
+                    canvasCtx.stroke();
+                }
+            }
+
+            // Zustand prüfen
+            if (state !== lastState) {
+                const duration = (now - lastChangeTime) / 1000;
+                if (lastState === 'open') {
+                    openTime += duration;
+                } else {
+                    closedTime += duration;
+                }
+                lastChangeTime = now;
+                lastState = state;
+                updateChart();
+            }
+
+            requestAnimationFrame(detectFace);
+        }
+
+        async function init() {
+            document.getElementById('status').innerText = 'Erbitte Kamerazugriff...';
+            await setupCamera();
+            document.getElementById('status').innerText = 'Lade Modell...';
+
+            // Modell laden
+            model = await faceLandmarksDetection.createDetector(
+                faceLandmarksDetection.SupportedModels.MediaPipeFaceMesh,
+                {
+                    runtime: 'tfjs',
+                    refineLandmarks: false,
+                    maxFaces: 1
+                }
+            );
+            document.getElementById('status').innerText = 'Modell geladen, starte Erkennung...';
+            requestAnimationFrame(detectFace);
+        }
+
+        init();
     </script>
+
+    <!--
+    Test Cases:
+    1. Verify that the HTML file loads without syntax errors.
+    2. Check that the camera feed displays in the <video> element.
+    3. Confirm that the chart updates (Offen/Geschlossen) when mouth states switch.
+    4. If mouth stays open for ~3 seconds, ensure \"Offen\" bar in the chart increments by ~3.
+    5. If mouth is closed for ~2 seconds, ensure \"Geschlossen\" bar increments by ~2.
+    -->
 </body>
 </html>
