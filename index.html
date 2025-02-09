@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Fressanlage</title>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/facemesh"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body {
+            text-align: center;
+            font-family: Arial, sans-serif;
+        }
+
+        video {
+            position: absolute;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 640px;
+            height: 480px;
+            border: 2px solid black;
+        }
+
+        canvas {
+            position: absolute;
+            left: 50%;
+            transform: translateX(-50%);
+            top: 100px;
+        }
+
+        #chartCanvas {
+            position: relative;
+            margin-top: 520px;
+            width: 400px;
+            height: 200px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Fressanlage: Mundöffnungserkennung</h1>
+    <video id="video" autoplay playsinline></video>
+    <canvas id="overlay"></canvas>
+    <canvas id="chartCanvas"></canvas>
+
+    <script>
+        let openMouthTime = 0;
+        let closedMouthTime = 0;
+        let lastState = "closed";
+        let lastChangeTime = Date.now();
+
+        async function setupCamera() {
+            const video = document.getElementById('video');
+            const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+            video.srcObject = stream;
+            return new Promise((resolve) => {
+                video.onloadedmetadata = () => resolve(video);
+            });
+        }
+
+        async function detectMouth() {
+            const video = await setupCamera();
+            const model = await facemesh.load();
+            const canvas = document.getElementById('overlay');
+            const ctx = canvas.getContext('2d');
+
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+
+            function drawMouthOutline(mouthLandmarks, isOpen) {
+                ctx.beginPath();
+                ctx.moveTo(mouthLandmarks[0][0], mouthLandmarks[0][1]);
+                for (let i = 1; i < mouthLandmarks.length; i++) {
+                    ctx.lineTo(mouthLandmarks[i][0], mouthLandmarks[i][1]);
+                }
+                ctx.closePath();
+                ctx.strokeStyle = isOpen ? 'red' : 'blue';
+                ctx.lineWidth = 3;
+                ctx.stroke();
+            }
+
+            async function analyzeFrame() {
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+                const predictions = await model.estimateFaces({ input: video });
+                if (predictions.length > 0) {
+                    const keypoints = predictions[0].scaledMesh;
+                    const upperLip = keypoints[13];
+                    const lowerLip = keypoints[14];
+
+                    const mouthOpen = Math.abs(upperLip[1] - lowerLip[1]) > 15; // Schwellenwert für "offen"
+
+                    drawMouthOutline([keypoints[61], keypoints[146], keypoints[91], keypoints[181], keypoints[84], keypoints[17]], mouthOpen);
+
+                    let currentTime = Date.now();
+                    if (mouthOpen && lastState === "closed") {
+                        closedMouthTime += (currentTime - lastChangeTime) / 1000;
+                        lastState = "open";
+                        lastChangeTime = currentTime;
+                    } else if (!mouthOpen && lastState === "open") {
+                        openMouthTime += (currentTime - lastChangeTime) / 1000;
+                        lastState = "closed";
+                        lastChangeTime = currentTime;
+                    }
+                }
+                updateChart();
+                requestAnimationFrame(analyzeFrame);
+            }
+
+            analyzeFrame();
+        }
+
+        function updateChart() {
+            if (!window.myChart) {
+                const ctx = document.getElementById('chartCanvas').getContext('2d');
+                window.myChart = new Chart(ctx, {
+                    type: 'bar',
+                    data: {
+                        labels: ['Mund geschlossen', 'Mund offen'],
+                        datasets: [{
+                            label: 'Zeit (Sekunden)',
+                            data: [closedMouthTime, openMouthTime],
+                            backgroundColor: ['blue', 'red']
+                        }]
+                    },
+                    options: {
+                        responsive: false,
+                        scales: {
+                            y: { beginAtZero: true }
+                        }
+                    }
+                });
+            } else {
+                window.myChart.data.datasets[0].data = [closedMouthTime, openMouthTime];
+                window.myChart.update();
+            }
+        }
+
+        detectMouth();
+    </script>
+</body>
+</html>
