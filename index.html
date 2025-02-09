@@ -25,23 +25,26 @@
         let video = document.getElementById('video');
 
         async function setupCamera() {
-            const stream = await navigator.mediaDevices.getUserMedia({ video: true });
-            video.srcObject = stream;
-
-            return new Promise((resolve) => {
-                video.onloadedmetadata = () => {
-                    video.play();
-                    console.log("Kamera erfolgreich gestartet.");
-                    resolve(video);
-                };
-            });
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+                video.srcObject = stream;
+                return new Promise((resolve) => {
+                    video.onloadedmetadata = () => {
+                        video.play();
+                        console.log("Kamera erfolgreich gestartet.");
+                        resolve(video);
+                    };
+                });
+            } catch (error) {
+                console.error("Fehler beim Starten der Kamera:", error);
+            }
         }
 
         async function detectMouth() {
             const video = await setupCamera();
             await new Promise(resolve => setTimeout(resolve, 1000)); // Sicherheitspuffer
 
-            // Warte, bis das Video eine Breite und Höhe hat
+            // Warte, bis das Video eine gültige Größe hat
             while (video.videoWidth === 0 || video.videoHeight === 0) {
                 console.log("Warte auf Webcam-Feed...");
                 await new Promise(resolve => setTimeout(resolve, 100));
@@ -54,16 +57,6 @@
             canvas.width = video.videoWidth;
             canvas.height = video.videoHeight;
 
-            function drawMouthOutline(mouthLandmarks, isOpen) {
-                ctx.beginPath();
-                ctx.moveTo(mouthLandmarks[0][0], mouthLandmarks[0][1]);
-                for (let i = 1; i < mouthLandmarks.length; i++) ctx.lineTo(mouthLandmarks[i][0], mouthLandmarks[i][1]);
-                ctx.closePath();
-                ctx.strokeStyle = isOpen ? 'red' : 'blue';
-                ctx.lineWidth = 3;
-                ctx.stroke();
-            }
-
             async function analyzeFrame() {
                 if (video.videoWidth === 0 || video.videoHeight === 0) {
                     console.warn("Video hat keine gültige Größe. Überspringe Frame.");
@@ -72,28 +65,46 @@
                 }
 
                 ctx.clearRect(0, 0, canvas.width, canvas.height);
-                const predictions = await model.estimateFaces({ input: video });
 
-                if (predictions.length > 0) {
-                    const keypoints = predictions[0].scaledMesh;
-                    const upperLip = keypoints[13], lowerLip = keypoints[14];
-                    const mouthOpen = Math.abs(upperLip[1] - lowerLip[1]) > 15;
+                try {
+                    const predictions = await model.estimateFaces({ input: video });
 
-                    drawMouthOutline([keypoints[61], keypoints[146], keypoints[91], keypoints[181], keypoints[84], keypoints[17]], mouthOpen);
+                    if (predictions.length > 0) {
+                        const keypoints = predictions[0].scaledMesh;
+                        const upperLip = keypoints[13], lowerLip = keypoints[14];
+                        const mouthOpen = Math.abs(upperLip[1] - lowerLip[1]) > 15;
 
-                    let currentTime = Date.now();
-                    if (mouthOpen && lastState === "closed") {
-                        closedMouthTime += (currentTime - lastChangeTime) / 1000;
-                        lastState = "open";
-                        lastChangeTime = currentTime;
-                    } else if (!mouthOpen && lastState === "open") {
-                        openMouthTime += (currentTime - lastChangeTime) / 1000;
-                        lastState = "closed";
-                        lastChangeTime = currentTime;
+                        drawMouthOutline([keypoints[61], keypoints[146], keypoints[91], keypoints[181], keypoints[84], keypoints[17]], mouthOpen);
+
+                        let currentTime = Date.now();
+                        if (mouthOpen && lastState === "closed") {
+                            closedMouthTime += (currentTime - lastChangeTime) / 1000;
+                            lastState = "open";
+                            lastChangeTime = currentTime;
+                        } else if (!mouthOpen && lastState === "open") {
+                            openMouthTime += (currentTime - lastChangeTime) / 1000;
+                            lastState = "closed";
+                            lastChangeTime = currentTime;
+                        }
                     }
+                } catch (error) {
+                    console.error("Fehler in analyzeFrame():", error);
                 }
+
                 updateChart();
                 requestAnimationFrame(analyzeFrame);
+            }
+
+            function drawMouthOutline(mouthLandmarks, isOpen) {
+                ctx.beginPath();
+                ctx.moveTo(mouthLandmarks[0][0], mouthLandmarks[0][1]);
+                for (let i = 1; i < mouthLandmarks.length; i++) {
+                    ctx.lineTo(mouthLandmarks[i][0], mouthLandmarks[i][1]);
+                }
+                ctx.closePath();
+                ctx.strokeStyle = isOpen ? 'red' : 'blue';
+                ctx.lineWidth = 3;
+                ctx.stroke();
             }
 
             analyzeFrame();
