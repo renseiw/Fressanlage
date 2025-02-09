@@ -36,15 +36,17 @@
     <canvas id="chartCanvas" width="400" height="200"></canvas>
 
     <script>
-        // Ask the user what behavior is expected if multiple faces appear.
-        // Currently, the code only processes the first face in view.
-        // Is that okay, or do you want to track multiple faces?
+        // Fragen an den Nutzer:
+        // 1. Was soll passieren, wenn mehrere Gesichter erkannt werden?
+        //    Wir betrachten standardmäßig nur predictions[0].
+        // 2. Wie soll ein Grenzwert wie 0.02 bei "isMouthOpen" behandelt werden?
+        //    Offen oder zu?
 
-        let model;
+        // Globale Variablen
+        let model = null;
         let video = document.getElementById('video');
-        let outputCanvas = document.getElementById('outputCanvas');
-        // Renaming variable to avoid duplicate declarations
-        let canvasCtx = outputCanvas.getContext('2d');
+        let canvas = document.getElementById('outputCanvas');
+        let ctx = canvas.getContext('2d');
 
         let openTime = 0;
         let closedTime = 0;
@@ -53,6 +55,7 @@
 
         let chart;
 
+        // Setup der Kamera
         async function setupCamera() {
             const stream = await navigator.mediaDevices.getUserMedia({ video: true });
             video.srcObject = stream;
@@ -64,6 +67,7 @@
             });
         }
 
+        // Aktualisiert das Balkendiagramm
         function updateChart() {
             if (!chart) {
                 const chartCtx = document.getElementById('chartCanvas').getContext('2d');
@@ -101,10 +105,9 @@
             return Math.sqrt(dx * dx + dy * dy);
         }
 
-        // Bestimme basierend auf Landmark-Punkten, ob der Mund offen ist
+        // Bestimmt basierend auf Landmark-Punkten, ob der Mund offen ist
+        // Beispiel: Oberer (13) und unterer (14) mittlerer Lippenpunkt
         function isMouthOpen(landmarks) {
-            // MediaPipe-Face-Mesh Indizes (ungefähr):
-            // Obere Lippe: 13, Untere Lippe: 14
             const upperLip = landmarks[13];
             const lowerLip = landmarks[14];
             const distance = euclideanDistance(
@@ -115,45 +118,57 @@
             return distance > 0.02;
         }
 
+        // Hauptschleife der Gesichtserkennung
         async function detectFace() {
-            // Zeichne das Kamerabild auf das Canvas
-            canvasCtx.drawImage(video, 0, 0, outputCanvas.width, outputCanvas.height);
-
-            // Führe die Gesichtserkennung aus
             // Sicherstellen, dass das Modell geladen ist
             if (!model) {
+                // Warte, bis Modell verfügbar ist, und versuche es erneut
                 requestAnimationFrame(detectFace);
                 return;
             }
 
-            const predictions = await model.estimateFaces({
-                input: video,
-                returnTensors: false,
-                flipHorizontal: false,
-                predictIrises: false
-            });
+            // Zeichne das Kamerabild auf das Canvas
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-            let now = Date.now();
-            let state = 'closed';
+            // Führe die Gesichtserkennung aus (Fehler abfangen)
+            let predictions = [];
+            try {
+                predictions = await model.estimateFaces({
+                    input: video,
+                    returnTensors: false,
+                    flipHorizontal: false,
+                    predictIrises: false
+                });
+            } catch (err) {
+                console.error('Fehler bei faceLandmarksDetection:', err);
+                requestAnimationFrame(detectFace);
+                return;
+            }
+
+            const now = Date.now();
+            let state = 'closed'; // default
 
             if (predictions.length > 0) {
+                // Nur das erste Gesicht (falls nur eine Person)
                 const keypoints = predictions[0].keypoints;
+
+                // Prüfen, ob Mund offen
                 if (isMouthOpen(keypoints)) {
                     state = 'open';
                 }
 
-                // Landmarks zur Visualisierung
-                canvasCtx.strokeStyle = 'lime';
+                // Landmarks zeichnen
+                ctx.strokeStyle = 'lime';
                 for (let i = 0; i < keypoints.length; i++) {
                     const x = keypoints[i].x;
                     const y = keypoints[i].y;
-                    canvasCtx.beginPath();
-                    canvasCtx.arc(x, y, 1, 0, 2 * Math.PI);
-                    canvasCtx.stroke();
+                    ctx.beginPath();
+                    ctx.arc(x, y, 1, 0, 2 * Math.PI);
+                    ctx.stroke();
                 }
             }
 
-            // Zustand prüfen
+            // Wenn sich der Zustand ändert, update die Zeit
             if (state !== lastState) {
                 const duration = (now - lastChangeTime) / 1000;
                 if (lastState === 'open') {
@@ -169,21 +184,51 @@
             requestAnimationFrame(detectFace);
         }
 
+        // Initialisierung
         async function init() {
             document.getElementById('status').innerText = 'Erbitte Kamerazugriff...';
             await setupCamera();
             document.getElementById('status').innerText = 'Lade Modell...';
 
             // Modell laden
-            model = await faceLandmarksDetection.createDetector(
-                faceLandmarksDetection.SupportedModels.MediaPipeFaceMesh,
-                {
-                    runtime: 'tfjs',
-                    refineLandmarks: false,
-                    maxFaces: 1
-                }
-            );
+            try {
+                model = await faceLandmarksDetection.createDetector(
+                    faceLandmarksDetection.SupportedModels.MediaPipeFaceMesh,
+                    {
+                        runtime: 'tfjs',
+                        refineLandmarks: false,
+                        maxFaces: 1
+                    }
+                );
+            } catch (err) {
+                console.error('Fehler beim Laden des Modells:', err);
+                document.getElementById('status').innerText = 'Fehler beim Modell-Laden';
+                return;
+            }
+
             document.getElementById('status').innerText = 'Modell geladen, starte Erkennung...';
+
+            // Bestehende Test Cases für isMouthOpen
+            console.log('--- Starte Unit Tests für isMouthOpen ---');
+            (function runTestCases() {
+                const testLandmarks = [];
+                // Test 1: Distanz ca. 0.03 (Mund offen)
+                testLandmarks[13] = { x: 0.1, y: 0.1 };
+                testLandmarks[14] = { x: 0.1, y: 0.13 };
+                console.log('Test 1 (erwartet: true) =>', isMouthOpen(testLandmarks));
+
+                // Test 2: Distanz ca. 0.01 (Mund geschlossen)
+                testLandmarks[14] = { x: 0.1, y: 0.11 };
+                console.log('Test 2 (erwartet: false) =>', isMouthOpen(testLandmarks));
+
+                // Neuer Test 3: Distanz = 0.02 (Grenzwert) => Fraglich, je nach Definition
+                // Hier nehmen wir an: "strictly greater" => false
+                testLandmarks[14] = { x: 0.1, y: 0.12 };
+                console.log('Test 3 (Distanz=0.02, erwartet: false) =>', isMouthOpen(testLandmarks));
+            })();
+            console.log('--- Ende Unit Tests ---');
+
+            // Starte Gesichtserkennung
             requestAnimationFrame(detectFace);
         }
 
@@ -191,12 +236,9 @@
     </script>
 
     <!--
-    Test Cases:
-    1. Verify that the HTML file loads without syntax errors.
-    2. Check that the camera feed displays in the <video> element.
-    3. Confirm that the chart updates (Offen/Geschlossen) when mouth states switch.
-    4. If mouth stays open for ~3 seconds, ensure \"Offen\" bar in the chart increments by ~3.
-    5. If mouth is closed for ~2 seconds, ensure \"Geschlossen\" bar increments by ~2.
+    Zusätzliche Test Cases:
+    1. Testen, ob Fehler geworfen wird, wenn kein Kamerazugriff vorliegt.
+    2. Prüfen, ob die Balken (Offen/Geschlossen) korrekt updaten, wenn Mund öfter wechselt.
     -->
 </body>
 </html>
