@@ -21,7 +21,7 @@
         let openMouthTime = 0, closedMouthTime = 0;
         let lastState = "closed";
         let lastChangeTime = Date.now();
-        let video, cap, faceCascade;
+        let video, cap, faceCascade, frame, gray, faces;
 
         async function setupCamera() {
             video = document.createElement("video");
@@ -30,24 +30,23 @@
             const stream = await navigator.mediaDevices.getUserMedia({ video: true });
             video.srcObject = stream;
 
-            await new Promise(resolve => video.onloadedmetadata = resolve);
-
-            // Warten, bis das Video eine gültige Größe hat
-            while (video.videoWidth === 0 || video.videoHeight === 0) {
-                console.log("Warte auf Webcam-Feed...");
-                await new Promise(resolve => setTimeout(resolve, 100));
-            }
-            return video;
+            return new Promise(resolve => {
+                video.onloadedmetadata = () => {
+                    console.log("Kamera erfolgreich gestartet: ", video.videoWidth, "x", video.videoHeight);
+                    video.play();
+                    resolve(video);
+                };
+            });
         }
 
         async function detectMouth() {
             video = await setupCamera();
             cap = new cv.VideoCapture(video);
 
-            // **Korrektur: Die Frame-Größe wird dynamisch gesetzt!**
-            let frame = new cv.Mat(video.videoHeight, video.videoWidth, cv.CV_8UC4);
-            let gray = new cv.Mat();
-            let faces = new cv.RectVector();
+            // Initialisiere die OpenCV-Objekte mit der richtigen Größe
+            frame = new cv.Mat(video.videoHeight, video.videoWidth, cv.CV_8UC4);
+            gray = new cv.Mat();
+            faces = new cv.RectVector();
 
             faceCascade = new cv.CascadeClassifier();
             await new Promise(resolve => {
@@ -59,15 +58,17 @@
             faceCascade.load("haarcascade_frontalface_default.xml");
 
             async function processFrame() {
-                if (video.videoWidth === 0 || video.videoHeight === 0) {
-                    console.warn("Video hat keine gültige Größe. Überspringe Frame.");
+                if (!video.videoWidth || !video.videoHeight) {
+                    console.warn("Video hat keine gültige Größe. Warte...");
                     requestAnimationFrame(processFrame);
                     return;
                 }
 
-                // **Korrektur: Frame-Größe mit Video synchronisieren**
+                // **Fix: Dynamische Neuzuordnung des Mat-Objekts, wenn die Größe sich ändert**
                 if (frame.cols !== video.videoWidth || frame.rows !== video.videoHeight) {
+                    console.log("Videoauflösung hat sich geändert, aktualisiere Mat-Objekte...");
                     frame = new cv.Mat(video.videoHeight, video.videoWidth, cv.CV_8UC4);
+                    gray = new cv.Mat();
                 }
 
                 cap.read(frame);
